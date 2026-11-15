@@ -1,0 +1,102 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ===== Виртуальные окружения =====
+.venv/
+venv/
+ENV/
+env/
+.env/
+.python-version
+
+# ===== Переменные окружения и секреты =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ===== SQLite и данные =====
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+olymp.db
+instance/
+
+# ===== Импорт/экспорт Excel =====
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+!app/static/templates/*.xlsx
+!templates/*.xlsx
+
+# ===== Логи =====
+*.log
+logs/
+*.out
+
+# ===== Кэш тестов и покрытие =====
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# ===== IDE / редакторы =====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===== PyCharm =====
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/shelf/
+.idea/**/contentModel.xml
+.idea/**/dataSources/
+.idea/**/dataSources.ids
+.idea/**/dataSources.local.xml
+.idea/**/sqlDataSources.xml
+.idea/**/dynamic.xml
+.idea/**/uiDesigner.xml
+.idea/**/gradle.xml
+.idea/**/libraries/
+.idea/**/markdown-navigator/
+
+# ===== Прочее =====
+*.bak
+*.tmp
+*.orig
+tmp/
+temp/

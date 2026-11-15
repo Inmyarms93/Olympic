@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Олимпиадный дашборд</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Олимпиадный дашборд</h1>
+    <div class="top-right">
+      <select id="version-select" title="Версия данных"></select>
+      <button id="delete-version-btn" hidden title="Удалить версию">Удалить версию</button>
+      <span id="mode-badge" class="badge">…</span>
+      <button id="login-btn" hidden>Войти как админ</button>
+      <button id="logout-btn" hidden>Выйти</button>
+      <button id="upload-btn" hidden>Импорт Excel</button>
+      <a id="template-btn" class="btn-link" href="/api/template" download hidden>Скачать шаблон</a>
+      <input id="file-input" type="file" accept=".xlsx" hidden>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="kpi">Сводка KPI</button>
+    <button class="tab" data-tab="prospects">Перспективные</button>
+    <button class="tab" data-tab="plans">Планы подготовки</button>
+    <button class="tab" data-tab="problems">Проблемные зоны</button>
+  </nav>
+
+  <main id="content"></main>
+
+  <div id="modal-root"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
