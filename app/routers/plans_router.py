@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -8,6 +8,7 @@ from ..models import (
     Plan, Prospect, Student, Subject, Result, Stage,
     PlanTask, PlanCheckpoint, ImportBatch,
 )
+from ..services.plan_status import compute_status
 
 router = APIRouter()
 
@@ -32,6 +33,7 @@ def _serialize_plan(db: Session, plan: Plan) -> dict:
                   Result.student_id == student.id, Result.subject_id == subject.id)
           .all())
     by_stage = {r.stage_code: r for r in rs}
+
     history = []
     last_score = None
     for code in ("school", "municipal", "regional"):
@@ -57,10 +59,12 @@ def _serialize_plan(db: Session, plan: Plan) -> dict:
             cur = {"stage": stages[code].name, "status": r.status, "score": r.score}
             break
 
-    tasks = db.query(PlanTask).filter(PlanTask.plan_id == plan.id)\
-        .order_by(PlanTask.due_date.is_(None), PlanTask.due_date).all()
-    checkpoints = db.query(PlanCheckpoint).filter(PlanCheckpoint.plan_id == plan.id)\
-        .order_by(PlanCheckpoint.due_date.is_(None), PlanCheckpoint.due_date).all()
+    tasks = (db.query(PlanTask).filter(PlanTask.plan_id == plan.id)
+             .order_by(PlanTask.due_date.is_(None), PlanTask.due_date).all())
+    checkpoints = (db.query(PlanCheckpoint).filter(PlanCheckpoint.plan_id == plan.id)
+                   .order_by(PlanCheckpoint.due_date.is_(None), PlanCheckpoint.due_date).all())
+
+    computed_status = compute_status(tasks, checkpoints)
 
     return {
         "id": plan.id,
@@ -69,7 +73,7 @@ def _serialize_plan(db: Session, plan: Plan) -> dict:
         "student": {"full_name": student.full_name, "class": student.class_name},
         "subject": subject.name,
         "goal": plan.goal,
-        "status": plan.status,
+        "status": computed_status,
         "current": cur,
         "history": history,
         "tasks": [{
@@ -99,15 +103,13 @@ def list_plans(
 ):
     vid = _resolve_version(db, version_id)
     if vid is None:
-        return {"items": []}
+        return {"items": [], "version_id": None}
 
     qy = (db.query(Plan, Prospect, Student, Subject)
           .join(Prospect, Prospect.id == Plan.prospect_id)
           .join(Student, Student.id == Prospect.student_id)
           .join(Subject, Subject.id == Prospect.subject_id)
           .filter(Plan.import_batch_id == vid))
-    if status:
-        qy = qy.filter(Plan.status == status)
     if subject:
         qy = qy.filter(Subject.name == subject)
     if class_name:
@@ -120,25 +122,38 @@ def list_plans(
         qy = qy.filter(Plan.id.in_(plan_ids or [-1]))
 
     rows = qy.all()
+    today = date.today()
 
     items = []
     for plan, prospect, student, subject_ in rows:
         tasks = db.query(PlanTask).filter(PlanTask.plan_id == plan.id).all()
-        done = sum(1 for t in tasks if t.is_done)
+        checkpoints = db.query(PlanCheckpoint).filter(PlanCheckpoint.plan_id == plan.id).all()
+        computed = compute_status(tasks, checkpoints, today)
+
+        if status and computed != status:
+            continue
+
+        done_tasks = sum(1 for t in tasks if t.is_done)
+        done_cps = sum(1 for c in checkpoints if c.is_passed)
         upcoming = [t.due_date for t in tasks if t.due_date and not t.is_done]
+        upcoming += [c.due_date for c in checkpoints if c.due_date and not c.is_passed]
         next_due = min(upcoming).isoformat() if upcoming else None
         teachers = sorted({t.responsible_teacher for t in tasks if t.responsible_teacher})
+
         items.append({
             "id": plan.id,
             "student": {"full_name": student.full_name, "class": student.class_name},
             "subject": subject_.name,
             "goal": plan.goal,
-            "status": plan.status,
-            "tasks_done": done, "tasks_total": len(tasks),
+            "status": computed,
+            "tasks_done": done_tasks, "tasks_total": len(tasks),
+            "checkpoints_done": done_cps, "checkpoints_total": len(checkpoints),
             "next_due": next_due,
             "teachers": teachers,
         })
-    items.sort(key=lambda x: (x["next_due"] or "9999", x["status"]))
+
+    order = {"просрочен": 0, "выполняется": 1, "выполнен": 2}
+    items.sort(key=lambda x: (x["next_due"] or "9999", order.get(x["status"], 9)))
     return {"items": items, "version_id": vid}
 
 
@@ -169,7 +184,6 @@ def create_plan(data: PlanCreateIn, db: Session = Depends(get_db)):
         import_batch_id=prospect.import_batch_id,
         prospect_id=data.prospect_id,
         goal=data.goal or "призёр регионального этапа",
-        status="в работе",
     )
     db.add(plan)
     db.flush()
@@ -193,8 +207,7 @@ def create_plan(data: PlanCreateIn, db: Session = Depends(get_db)):
 
 
 class PlanUpdateIn(BaseModel):
-    status: str | None = None
-    goal: str | None = None
+    goal: str | None = None  # статус больше не редактируется
 
 
 @router.patch("/plans/{plan_id}", dependencies=[Depends(require_admin)])
@@ -202,17 +215,25 @@ def update_plan(plan_id: int, data: PlanUpdateIn, db: Session = Depends(get_db))
     plan = db.get(Plan, plan_id)
     if not plan:
         raise HTTPException(404, "План не найден")
-    if data.status:
-        plan.status = data.status
     if data.goal:
         plan.goal = data.goal
     db.commit()
     return _serialize_plan(db, plan)
 
 
-class TaskIn(BaseModel):
+# ---------- Tasks ----------
+
+class TaskCreateIn(BaseModel):
     task_type: str | None = None
     title: str
+    description: str | None = None
+    due_date: str | None = None
+    responsible_teacher: str | None = None
+
+
+class TaskPatchIn(BaseModel):
+    task_type: str | None = None
+    title: str | None = None
     description: str | None = None
     due_date: str | None = None
     responsible_teacher: str | None = None
@@ -220,7 +241,7 @@ class TaskIn(BaseModel):
 
 
 @router.post("/plans/{plan_id}/tasks", dependencies=[Depends(require_admin)])
-def add_task(plan_id: int, data: TaskIn, db: Session = Depends(get_db)):
+def add_task(plan_id: int, data: TaskCreateIn, db: Session = Depends(get_db)):
     if not db.get(Plan, plan_id):
         raise HTTPException(404, "План не найден")
     t = PlanTask(plan_id=plan_id, task_type=data.task_type, title=data.title,
@@ -233,7 +254,7 @@ def add_task(plan_id: int, data: TaskIn, db: Session = Depends(get_db)):
 
 
 @router.patch("/plans/{plan_id}/tasks/{task_id}", dependencies=[Depends(require_admin)])
-def update_task(plan_id: int, task_id: int, data: TaskIn, db: Session = Depends(get_db)):
+def update_task(plan_id: int, task_id: int, data: TaskPatchIn, db: Session = Depends(get_db)):
     t = db.get(PlanTask, task_id)
     if not t or t.plan_id != plan_id:
         raise HTTPException(404, "Задача не найдена")
@@ -242,11 +263,10 @@ def update_task(plan_id: int, task_id: int, data: TaskIn, db: Session = Depends(
         if v is not None:
             setattr(t, f, v)
     if data.due_date is not None:
-        t.due_date = _parse_date(data.due_date)
+        t.due_date = _parse_date(data.due_date) if data.due_date else None
     if data.is_done is not None:
         t.is_done = data.is_done
-        if data.is_done:
-            t.done_at = datetime.utcnow()
+        t.done_at = datetime.utcnow() if data.is_done else None
     db.commit()
     return {"ok": True}
 
@@ -261,15 +281,23 @@ def delete_task(plan_id: int, task_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-class CheckpointIn(BaseModel):
+# ---------- Checkpoints ----------
+
+class CheckpointCreateIn(BaseModel):
     title: str
+    due_date: str | None = None
+    comment: str | None = None
+
+
+class CheckpointPatchIn(BaseModel):
+    title: str | None = None
     due_date: str | None = None
     comment: str | None = None
     is_passed: bool | None = None
 
 
 @router.post("/plans/{plan_id}/checkpoints", dependencies=[Depends(require_admin)])
-def add_checkpoint(plan_id: int, data: CheckpointIn, db: Session = Depends(get_db)):
+def add_checkpoint(plan_id: int, data: CheckpointCreateIn, db: Session = Depends(get_db)):
     if not db.get(Plan, plan_id):
         raise HTTPException(404, "План не найден")
     c = PlanCheckpoint(plan_id=plan_id, title=data.title,
@@ -281,20 +309,19 @@ def add_checkpoint(plan_id: int, data: CheckpointIn, db: Session = Depends(get_d
 
 
 @router.patch("/plans/{plan_id}/checkpoints/{cp_id}", dependencies=[Depends(require_admin)])
-def update_checkpoint(plan_id: int, cp_id: int, data: CheckpointIn, db: Session = Depends(get_db)):
+def update_checkpoint(plan_id: int, cp_id: int, data: CheckpointPatchIn, db: Session = Depends(get_db)):
     c = db.get(PlanCheckpoint, cp_id)
     if not c or c.plan_id != plan_id:
         raise HTTPException(404, "Контрольная точка не найдена")
     if data.title is not None:
         c.title = data.title
     if data.due_date is not None:
-        c.due_date = _parse_date(data.due_date)
+        c.due_date = _parse_date(data.due_date) if data.due_date else None
     if data.comment is not None:
         c.comment = data.comment
     if data.is_passed is not None:
         c.is_passed = data.is_passed
-        if data.is_passed:
-            c.passed_at = datetime.utcnow()
+        c.passed_at = datetime.utcnow() if data.is_passed else None
     db.commit()
     return {"ok": True}
 

@@ -6,7 +6,7 @@ const state = {
   filters: { classes: [], subjects: [] },
 };
 
-// ---------- API helpers ----------
+// ---------- API ----------
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     credentials: "same-origin",
@@ -27,14 +27,23 @@ function withVersion(url) {
   return `${url}${sep}version_id=${state.versionId}`;
 }
 
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+function statusBadge(s) {
+  if (!s) return "—";
+  return `<span class="plan-status status-${s}">${s}</span>`;
+}
+
 // ---------- Init ----------
 async function init() {
   try {
     const me = await api("/api/auth/me");
     state.isAdmin = !!me.is_admin;
-  } catch {
-    state.isAdmin = false;
-  }
+  } catch { state.isAdmin = false; }
   renderAuth();
   bindVersion();
   bindTabs();
@@ -51,7 +60,6 @@ function renderAuth() {
   const upload = document.getElementById("upload-btn");
   const tpl = document.getElementById("template-btn");
   const del = document.getElementById("delete-version-btn");
-
   if (state.isAdmin) {
     mode.textContent = "Режим: администратор";
     mode.className = "badge admin";
@@ -67,7 +75,6 @@ function renderAuth() {
   }
 }
 
-// ---------- Versions ----------
 async function loadVersions() {
   const v = await api("/api/versions");
   state.versions = v.items || [];
@@ -92,8 +99,7 @@ async function loadVersions() {
 
 function bindVersion() {
   document.getElementById("version-select").addEventListener("change", e => {
-    const v = Number(e.target.value);
-    state.versionId = v || null;
+    state.versionId = Number(e.target.value) || null;
     renderTab();
   });
   document.getElementById("delete-version-btn").addEventListener("click", async () => {
@@ -104,13 +110,10 @@ function bindVersion() {
       state.versionId = null;
       await loadVersions();
       renderTab();
-    } catch (e) {
-      alert(e.message);
-    }
+    } catch (e) { alert(e.message); }
   });
 }
 
-// ---------- Auth ----------
 document.getElementById("login-btn").addEventListener("click", () => {
   const pw = prompt("Пароль администратора:");
   if (!pw) return;
@@ -118,12 +121,10 @@ document.getElementById("login-btn").addEventListener("click", () => {
     .then(() => location.reload())
     .catch(e => alert(e.message));
 });
-
 document.getElementById("logout-btn").addEventListener("click", () => {
   api("/api/auth/logout", { method: "POST" }).then(() => location.reload());
 });
 
-// ---------- Tabs ----------
 function bindTabs() {
   document.querySelectorAll(".tab").forEach(t => {
     t.addEventListener("click", () => {
@@ -135,7 +136,6 @@ function bindTabs() {
   });
 }
 
-// ---------- Upload ----------
 function bindUpload() {
   const btn = document.getElementById("upload-btn");
   const inp = document.getElementById("file-input");
@@ -145,38 +145,25 @@ function bindUpload() {
     const fd = new FormData();
     fd.append("file", inp.files[0]);
     try {
-      const res = await fetch("/api/import", {
-        method: "POST", body: fd, credentials: "same-origin",
-      });
+      const res = await fetch("/api/import", { method: "POST", body: fd, credentials: "same-origin" });
       if (!res.ok) throw new Error((await res.json()).detail || "Ошибка");
       const r = await res.json();
-      alert(
-        `Создана версия v${r.version_id}\n` +
-        `Импортировано строк: ${r.imported}\n` +
-        `Дублей в файле: ${r.duplicates_skipped}`
-      );
+      alert(`Создана версия v${r.version_id}\nИмпортировано строк: ${r.imported}\nДублей: ${r.duplicates_skipped}`);
       state.versionId = r.version_id;
       await loadVersions();
       renderTab();
-    } catch (e) {
-      alert("Ошибка импорта: " + e.message);
-    } finally {
-      inp.value = "";
-    }
+    } catch (e) { alert("Ошибка импорта: " + e.message); }
+    finally { inp.value = ""; }
   });
 }
 
-// ---------- Filters ----------
 async function loadFilters() {
   try {
     const f = await api("/api/filters");
     state.filters = f;
-  } catch {
-    state.filters = { classes: [], subjects: [] };
-  }
+  } catch { state.filters = { classes: [], subjects: [] }; }
 }
 
-// ---------- Router ----------
 async function renderTab() {
   const c = document.getElementById("content");
   c.innerHTML = "<div class='empty'>Загрузка…</div>";
@@ -200,23 +187,24 @@ async function renderKpi(c) {
   c.innerHTML = `
     <div class="kpi-row">
       <div class="kpi-card"><h3>Перспективных пар</h3><div class="value">${k.prospects_count}</div></div>
-      <div class="kpi-card"><h3>Планов в работе</h3><div class="value">${k.plans_in_work}</div></div>
-      <div class="kpi-card"><h3>Цель достигнута</h3><div class="value">${k.goal_achieved}</div></div>
+      <div class="kpi-card"><h3>Выполняется</h3><div class="value" style="color:#856404">${k.plans_in_work}</div></div>
+      <div class="kpi-card"><h3>Выполнено</h3><div class="value" style="color:#155724">${k.goal_achieved}</div></div>
+      <div class="kpi-card"><h3>Просрочено</h3><div class="value" style="color:#721c24">${k.plans_overdue}</div></div>
     </div>
     <div class="card">
       <div class="section-title">Распределение планов по статусам</div>
-      <div>${Object.entries(k.plans_by_status || {}).map(([s, n]) => `${s}: <b>${n}</b>`).join(" · ") || "—"}</div>
+      <div>${Object.entries(k.plans_by_status || {}).map(([s, n]) => `${statusBadge(s)}: <b>${n}</b>`).join(" · ") || "—"}</div>
     </div>
     <div class="card">
       <div class="section-title">Охват по предметам</div>
       ${k.coverage_by_subject.length ? `<table><thead><tr><th>Предмет</th><th>Пар</th></tr></thead><tbody>
-        ${k.coverage_by_subject.map(x => `<tr><td>${x.subject}</td><td>${x.count}</td></tr>`).join("")}
+        ${k.coverage_by_subject.map(x => `<tr><td>${esc(x.subject)}</td><td>${x.count}</td></tr>`).join("")}
       </tbody></table>` : "<div class='empty'>Нет данных</div>"}
     </div>
     <div class="card">
       <div class="section-title">Охват по классам</div>
       ${k.coverage_by_class.length ? `<table><thead><tr><th>Класс</th><th>Пар</th></tr></thead><tbody>
-        ${k.coverage_by_class.map(x => `<tr><td>${x.class}</td><td>${x.count}</td></tr>`).join("")}
+        ${k.coverage_by_class.map(x => `<tr><td>${esc(x.class)}</td><td>${x.count}</td></tr>`).join("")}
       </tbody></table>` : "<div class='empty'>Нет данных</div>"}
     </div>
     <div class="card">
@@ -224,7 +212,7 @@ async function renderKpi(c) {
       ${k.upcoming.length ? `<table><thead><tr><th>Тип</th><th>Название</th><th>Дата</th><th>Педагог</th></tr></thead><tbody>
         ${k.upcoming.map(u => `<tr>
           <td>${u.kind === "task" ? "Задача" : "Контр. точка"}</td>
-          <td>${u.title}</td><td>${u.due_date}</td><td>${u.teacher || "—"}</td>
+          <td>${esc(u.title)}</td><td>${u.due_date}</td><td>${esc(u.teacher || "—")}</td>
         </tr>`).join("")}
       </tbody></table>` : "<div class='empty'>Нет дедлайнов</div>"}
     </div>
@@ -248,8 +236,8 @@ async function renderProspects(c) {
   c.innerHTML = `
     <div class="card">
       <div class="filters">
-        <select id="f-class"><option value="">Все классы</option>${state.filters.classes.map(x => `<option>${x}</option>`).join("")}</select>
-        <select id="f-subject"><option value="">Все предметы</option>${state.filters.subjects.map(x => `<option>${x}</option>`).join("")}</select>
+        <select id="f-class"><option value="">Все классы</option>${state.filters.classes.map(x => `<option>${esc(x)}</option>`).join("")}</select>
+        <select id="f-subject"><option value="">Все предметы</option>${state.filters.subjects.map(x => `<option>${esc(x)}</option>`).join("")}</select>
         <select id="f-source">
           <option value="all">Все источники</option>
           <option value="auto">Авто</option>
@@ -287,7 +275,6 @@ async function renderProspects(c) {
       list.innerHTML = "<div class='empty'>Ничего не найдено</div>";
       return;
     }
-
     list.innerHTML = `<div class="empty">Показано: ${data.items.length} из ${data.total}</div>
       <table>
         <thead><tr>
@@ -299,15 +286,15 @@ async function renderProspects(c) {
         <tbody>
           ${data.items.map(i => `<tr>
             <td><input type="checkbox" class="row-check" value="${i.prospect_id}" ${!state.isAdmin ? "disabled" : ""}></td>
-            <td>${i.student.full_name}</td>
-            <td>${i.student.class}</td>
-            <td>${i.subject}</td>
+            <td>${esc(i.student.full_name)}</td>
+            <td>${esc(i.student.class)}</td>
+            <td>${esc(i.subject)}</td>
             <td>${i.current.stage || "—"}</td>
             <td>${i.current.status || "—"}</td>
             <td>${i.current.score ?? "—"}</td>
             <td>${i.auto_qualified ? "да" : "—"}</td>
-            <td>${i.manual_flag ? `<span class="flag ${flagClass(i.manual_flag)}">${i.manual_flag}</span>` : "—"}</td>
-            <td>${i.plan ? i.plan.status : "—"}</td>
+            <td>${i.manual_flag ? `<span class="flag ${flagClass(i.manual_flag)}">${esc(i.manual_flag)}</span>` : "—"}</td>
+            <td>${i.plan ? statusBadge(i.plan.status) : "—"}</td>
             <td><button data-pid="${i.prospect_id}" data-plan="${i.plan ? i.plan.id : ""}">Открыть</button></td>
           </tr>`).join("")}
         </tbody>
@@ -320,7 +307,6 @@ async function renderProspects(c) {
         else openCreatePlanModal(Number(b.dataset.pid));
       });
     });
-
     if (state.isAdmin) {
       document.getElementById("select-all").addEventListener("change", e => {
         list.querySelectorAll(".row-check").forEach(cb => cb.checked = e.target.checked);
@@ -330,14 +316,11 @@ async function renderProspects(c) {
       updateBulkInfo();
     }
   }
-
   function updateBulkInfo() {
     const n = document.querySelectorAll(".row-check:checked").length;
     document.getElementById("bulk-info").textContent = `Выбрано: ${n}`;
   }
-
   document.getElementById("btn-refresh").addEventListener("click", load);
-
   if (state.isAdmin) {
     document.getElementById("bulk-flag").addEventListener("click", async () => {
       const ids = [...document.querySelectorAll(".row-check:checked")].map(x => Number(x.value));
@@ -351,7 +334,6 @@ async function renderProspects(c) {
       } catch (e) { alert(e.message); }
     });
   }
-
   await load();
 }
 
@@ -362,14 +344,14 @@ function flagClass(f) {
   return "";
 }
 
-// ---------- Plans ----------
+// ---------- Plans list ----------
 async function renderPlans(c) {
   c.innerHTML = `
     <div class="card">
       <div class="filters">
         <select id="p-status">
           <option value="">Все статусы</option>
-          <option>в работе</option><option>на паузе</option><option>завершён</option><option>цель достигнута</option>
+          <option>выполняется</option><option>выполнен</option><option>просрочен</option>
         </select>
         <input id="p-teacher" placeholder="Педагог">
         <input id="p-q" placeholder="Поиск по ФИО">
@@ -378,7 +360,6 @@ async function renderPlans(c) {
       <div id="plans-list"></div>
     </div>
   `;
-
   async function load() {
     const qs = new URLSearchParams({
       status: document.getElementById("p-status").value,
@@ -394,19 +375,20 @@ async function renderPlans(c) {
     list.innerHTML = `<table>
       <thead><tr>
         <th>ФИО</th><th>Класс</th><th>Предмет</th>
-        <th>Статус</th><th>Цель</th><th>Прогресс</th>
+        <th>Статус</th><th>Цель</th><th>Задачи</th><th>Точки</th>
         <th>Ближайший дедлайн</th><th>Педагоги</th><th></th>
       </tr></thead>
       <tbody>
         ${data.items.map(p => `<tr>
-          <td>${p.student.full_name}</td>
-          <td>${p.student.class}</td>
-          <td>${p.subject}</td>
-          <td class="status-${(p.status || "").replace(/\s/g, "-")}">${p.status}</td>
-          <td>${p.goal}</td>
+          <td>${esc(p.student.full_name)}</td>
+          <td>${esc(p.student.class)}</td>
+          <td>${esc(p.subject)}</td>
+          <td>${statusBadge(p.status)}</td>
+          <td>${esc(p.goal)}</td>
           <td>${p.tasks_done}/${p.tasks_total}</td>
+          <td>${p.checkpoints_done}/${p.checkpoints_total}</td>
           <td>${p.next_due || "—"}</td>
-          <td>${p.teachers.join(", ") || "—"}</td>
+          <td>${p.teachers.map(esc).join(", ") || "—"}</td>
           <td><button data-plan="${p.id}">Открыть</button></td>
         </tr>`).join("")}
       </tbody>
@@ -415,7 +397,6 @@ async function renderPlans(c) {
       b.addEventListener("click", () => openPlanById(Number(b.dataset.plan)));
     });
   }
-
   document.getElementById("p-refresh").addEventListener("click", load);
   await load();
 }
@@ -450,20 +431,18 @@ async function renderProblems(c) {
     adm.innerHTML = `<table>
       <thead><tr><th>ФИО</th><th>Класс</th><th>Предмет</th><th>Этап</th><th>Статус</th><th>Балл</th><th></th></tr></thead>
       <tbody>${admittedData.items.map(i => `<tr>
-        <td>${i.student.full_name}</td><td>${i.student.class}</td>
-        <td>${i.subject}</td><td>${i.stage}</td>
+        <td>${esc(i.student.full_name)}</td><td>${esc(i.student.class)}</td>
+        <td>${esc(i.subject)}</td><td>${esc(i.stage)}</td>
         <td>${i.status || "—"}</td><td>${i.score ?? "—"}</td>
         <td>${state.isAdmin && i.prospect_id ? `<button data-take="${i.prospect_id}">Взять в план</button>` : ""}</td>
       </tr>`).join("")}</tbody></table>`;
-
     adm.querySelectorAll("[data-take]").forEach(b => b.addEventListener("click", async () => {
       try {
         await api("/api/prospects/bulk-flag", {
           method: "POST",
           body: JSON.stringify({ prospect_ids: [Number(b.dataset.take)], flag: "взят в план" }),
         });
-        b.disabled = true;
-        b.textContent = "В плане";
+        b.disabled = true; b.textContent = "В плане";
       } catch (e) { alert(e.message); }
     }));
   }
@@ -484,11 +463,11 @@ async function renderProblems(c) {
       <tbody>
         ${d.items.map(a => `<tr>
           ${state.isAdmin ? `<td><input type='checkbox' class='a-check' value='${a.id}'></td>` : ""}
-          <td>${a.anomaly_type}</td>
-          <td>${a.student ? a.student.full_name + " (" + a.student.class + ")" : "—"}</td>
-          <td>${a.subject || "—"}</td>
-          <td>${a.stage || "—"}</td>
-          <td>${a.description}</td>
+          <td>${esc(a.anomaly_type)}</td>
+          <td>${a.student ? esc(a.student.full_name) + " (" + esc(a.student.class) + ")" : "—"}</td>
+          <td>${esc(a.subject || "—")}</td>
+          <td>${esc(a.stage || "—")}</td>
+          <td>${esc(a.description)}</td>
         </tr>`).join("")}
       </tbody>
     </table>`;
@@ -498,9 +477,7 @@ async function renderProblems(c) {
       });
     }
   }
-
   document.getElementById("a-refresh").addEventListener("click", loadAnomalies);
-
   if (state.isAdmin) {
     document.getElementById("a-mark").addEventListener("click", async () => {
       const ids = [...document.querySelectorAll(".a-check:checked")].map(x => Number(x.value));
@@ -514,7 +491,6 @@ async function renderProblems(c) {
       } catch (e) { alert(e.message); }
     });
   }
-
   await loadAnomalies();
 }
 
@@ -524,6 +500,206 @@ async function openPlanById(planId) {
   openPlanModal(plan);
 }
 
+async function refreshPlan(planId) {
+  document.getElementById("modal-root").innerHTML = "";
+  try {
+    const plan = await api(`/api/plans/${planId}`);
+    openPlanModal(plan);
+    renderTab();
+  } catch (e) { alert(e.message); }
+}
+
+function openPlanModal(plan) {
+  const isAdmin = state.isAdmin;
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop";
+
+  const taskTypes = ["тренировка", "разбор", "консультация", "пробный тур", "другое"];
+
+  modal.innerHTML = `
+    <div class="modal">
+      <h2>${esc(plan.student.full_name)} · ${esc(plan.student.class)} · ${esc(plan.subject)}</h2>
+      <div>Цель: <b>${esc(plan.goal)}</b> · Статус: ${statusBadge(plan.status)}</div>
+
+      <div class="section-title">Текущая точка</div>
+      <div>${plan.current ? `${esc(plan.current.stage)} · ${esc(plan.current.status || "—")} · ${plan.current.score ?? "—"}` : "—"}</div>
+
+      <div class="section-title">История прогресса</div>
+      <table class="history-table">
+        <thead><tr><th>Этап</th><th>Статус</th><th>Балл</th><th></th></tr></thead>
+        <tbody>
+          ${plan.history.map(h => `<tr>
+            <td>${esc(h.stage)}</td>
+            <td>${esc(h.status || "—")}</td>
+            <td>${h.score ?? "—"}</td>
+            <td>${h.risk ? '<span class="risk">⚠ падение</span>' : ""}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+
+      <div class="section-title">Задачи подготовки</div>
+      <table class="edit-table">
+        <thead><tr>
+          <th>Тип</th><th>Название</th><th>Дата</th><th>Педагог</th><th>Готово</th>${isAdmin ? "<th></th>" : ""}
+        </tr></thead>
+        <tbody>
+          ${plan.tasks.length ? plan.tasks.map(t => `<tr data-task-id="${t.id}">
+            <td>${isAdmin ? `<select class="task-field" data-field="task_type">
+              ${taskTypes.map(x => `<option ${x === (t.task_type || "тренировка") ? "selected" : ""}>${x}</option>`).join("")}
+            </select>` : esc(t.task_type || "—")}</td>
+            <td>${isAdmin ? `<input class="task-field" data-field="title" value="${esc(t.title)}">` : esc(t.title)}</td>
+            <td>${isAdmin ? `<input class="task-field" data-field="due_date" type="date" value="${t.due_date || ""}">` : (t.due_date || "—")}</td>
+            <td>${isAdmin ? `<input class="task-field" data-field="responsible_teacher" value="${esc(t.responsible_teacher || "")}">` : esc(t.responsible_teacher || "—")}</td>
+            <td>${isAdmin ? `<input class="task-field" data-field="is_done" type="checkbox" ${t.is_done ? "checked" : ""}>` : (t.is_done ? "✓" : "○")}</td>
+            ${isAdmin ? `<td><button class="btn-del" data-del-task="${t.id}">×</button></td>` : ""}
+          </tr>`).join("") : `<tr><td colspan="${isAdmin ? 6 : 5}" class="empty">Нет задач</td></tr>`}
+        </tbody>
+      </table>
+      ${isAdmin ? `
+        <div class="add-form">
+          <select id="new-task-type">${taskTypes.map(x => `<option>${x}</option>`).join("")}</select>
+          <input id="new-task-title" placeholder="Название">
+          <input id="new-task-date" type="date">
+          <input id="new-task-teacher" placeholder="Педагог">
+          <button class="primary" id="add-task-btn">+ Задача</button>
+        </div>
+      ` : ""}
+
+      <div class="section-title">Контрольные точки</div>
+      <table class="edit-table">
+        <thead><tr>
+          <th>Название</th><th>Дата</th><th>Пройдено</th>${isAdmin ? "<th></th>" : ""}
+        </tr></thead>
+        <tbody>
+          ${plan.checkpoints.length ? plan.checkpoints.map(cp => `<tr data-cp-id="${cp.id}">
+            <td>${isAdmin ? `<input class="cp-field" data-field="title" value="${esc(cp.title)}">` : esc(cp.title)}</td>
+            <td>${isAdmin ? `<input class="cp-field" data-field="due_date" type="date" value="${cp.due_date || ""}">` : (cp.due_date || "—")}</td>
+            <td>${isAdmin ? `<input class="cp-field" data-field="is_passed" type="checkbox" ${cp.is_passed ? "checked" : ""}>` : (cp.is_passed ? "✓" : "○")}</td>
+            ${isAdmin ? `<td><button class="btn-del" data-del-cp="${cp.id}">×</button></td>` : ""}
+          </tr>`).join("") : `<tr><td colspan="${isAdmin ? 4 : 3}" class="empty">Нет контрольных точек</td></tr>`}
+        </tbody>
+      </table>
+      ${isAdmin ? `
+        <div class="add-form">
+          <input id="new-cp-title" placeholder="Название">
+          <input id="new-cp-date" type="date">
+          <button class="primary" id="add-cp-btn">+ Точка</button>
+        </div>
+      ` : ""}
+
+      <div style="margin-top:16px"><button id="close-modal">Закрыть</button></div>
+    </div>`;
+
+  document.getElementById("modal-root").innerHTML = "";
+  document.getElementById("modal-root").appendChild(modal);
+  modal.querySelector("#close-modal").onclick = () => modal.remove();
+
+  if (!isAdmin) return;
+
+  // --- PATCH задача при изменении поля ---
+  modal.querySelectorAll(".task-field").forEach(f => {
+    f.addEventListener("change", async () => {
+      const tr = f.closest("tr");
+      const taskId = Number(tr.dataset.taskId);
+      const body = {};
+      tr.querySelectorAll(".task-field").forEach(ff => {
+        const field = ff.dataset.field;
+        if (field === "is_done") body[field] = ff.checked;
+        else if (field === "due_date") body[field] = ff.value || null;
+        else body[field] = ff.value;
+      });
+      try {
+        await api(`/api/plans/${plan.id}/tasks/${taskId}`, {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        });
+        await refreshPlan(plan.id);
+      } catch (e) { alert(e.message); }
+    });
+  });
+
+  // --- DELETE задача ---
+  modal.querySelectorAll("[data-del-task]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("Удалить задачу?")) return;
+      try {
+        await api(`/api/plans/${plan.id}/tasks/${b.dataset.delTask}`, { method: "DELETE" });
+        await refreshPlan(plan.id);
+      } catch (e) { alert(e.message); }
+    };
+  });
+
+  // --- POST задача ---
+  const addTaskBtn = modal.querySelector("#add-task-btn");
+  if (addTaskBtn) addTaskBtn.onclick = async () => {
+    const title = modal.querySelector("#new-task-title").value.trim();
+    if (!title) return alert("Введите название задачи");
+    try {
+      await api(`/api/plans/${plan.id}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({
+          task_type: modal.querySelector("#new-task-type").value,
+          title,
+          due_date: modal.querySelector("#new-task-date").value || null,
+          responsible_teacher: modal.querySelector("#new-task-teacher").value || null,
+        }),
+      });
+      await refreshPlan(plan.id);
+    } catch (e) { alert(e.message); }
+  };
+
+  // --- PATCH контрольная точка ---
+  modal.querySelectorAll(".cp-field").forEach(f => {
+    f.addEventListener("change", async () => {
+      const tr = f.closest("tr");
+      const cpId = Number(tr.dataset.cpId);
+      const body = {};
+      tr.querySelectorAll(".cp-field").forEach(ff => {
+        const field = ff.dataset.field;
+        if (field === "is_passed") body[field] = ff.checked;
+        else if (field === "due_date") body[field] = ff.value || null;
+        else body[field] = ff.value;
+      });
+      try {
+        await api(`/api/plans/${plan.id}/checkpoints/${cpId}`, {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        });
+        await refreshPlan(plan.id);
+      } catch (e) { alert(e.message); }
+    });
+  });
+
+  // --- DELETE контрольная точка ---
+  modal.querySelectorAll("[data-del-cp]").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("Удалить контрольную точку?")) return;
+      try {
+        await api(`/api/plans/${plan.id}/checkpoints/${b.dataset.delCp}`, { method: "DELETE" });
+        await refreshPlan(plan.id);
+      } catch (e) { alert(e.message); }
+    };
+  });
+
+  // --- POST контрольная точка ---
+  const addCpBtn = modal.querySelector("#add-cp-btn");
+  if (addCpBtn) addCpBtn.onclick = async () => {
+    const title = modal.querySelector("#new-cp-title").value.trim();
+    if (!title) return alert("Введите название точки");
+    try {
+      await api(`/api/plans/${plan.id}/checkpoints`, {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          due_date: modal.querySelector("#new-cp-date").value || null,
+        }),
+      });
+      await refreshPlan(plan.id);
+    } catch (e) { alert(e.message); }
+  };
+}
+
+// ---------- Create plan modal (без изменений) ----------
 function openCreatePlanModal(prospectId) {
   if (!state.isAdmin) return alert("Требуется вход администратора");
   const modal = document.createElement("div");
@@ -558,34 +734,28 @@ function openCreatePlanModal(prospectId) {
     </div>`;
   document.getElementById("modal-root").appendChild(modal);
 
-  const tasks = [];
-  const cps = [];
-
+  const tasks = [], cps = [];
   const renderTasks = () => {
     document.getElementById("tasks").innerHTML = tasks.length
-      ? tasks.map((t, i) => `<div>${t.task_type}: ${t.title} — ${t.due_date || "—"} (${t.responsible_teacher || "—"}) <button data-rm-task="${i}">×</button></div>`).join("")
+      ? tasks.map((t, i) => `<div>${esc(t.task_type)}: ${esc(t.title)} — ${t.due_date || "—"} (${esc(t.responsible_teacher || "—")}) <button data-rm-task="${i}">×</button></div>`).join("")
       : "<div class='empty'>Нет задач</div>";
     document.querySelectorAll("[data-rm-task]").forEach(b => b.onclick = () => {
-      tasks.splice(Number(b.dataset.rmTask), 1);
-      renderTasks();
+      tasks.splice(Number(b.dataset.rmTask), 1); renderTasks();
     });
   };
   const renderCps = () => {
     document.getElementById("cps").innerHTML = cps.length
-      ? cps.map((c, i) => `<div>${c.title} — ${c.due_date || "—"} <button data-rm-cp="${i}">×</button></div>`).join("")
+      ? cps.map((c, i) => `<div>${esc(c.title)} — ${c.due_date || "—"} <button data-rm-cp="${i}">×</button></div>`).join("")
       : "<div class='empty'>Нет контрольных точек</div>";
     document.querySelectorAll("[data-rm-cp]").forEach(b => b.onclick = () => {
-      cps.splice(Number(b.dataset.rmCp), 1);
-      renderCps();
+      cps.splice(Number(b.dataset.rmCp), 1); renderCps();
     });
   };
-
   document.getElementById("t-add").onclick = () => {
     const title = document.getElementById("t-title").value.trim();
     if (!title) return;
     tasks.push({
-      task_type: document.getElementById("t-type").value,
-      title,
+      task_type: document.getElementById("t-type").value, title,
       due_date: document.getElementById("t-date").value || null,
       responsible_teacher: document.getElementById("t-teacher").value || null,
     });
@@ -595,80 +765,23 @@ function openCreatePlanModal(prospectId) {
   document.getElementById("cp-add").onclick = () => {
     const title = document.getElementById("cp-title").value.trim();
     if (!title) return;
-    cps.push({
-      title,
-      due_date: document.getElementById("cp-date").value || null,
-    });
+    cps.push({ title, due_date: document.getElementById("cp-date").value || null });
     document.getElementById("cp-title").value = "";
     renderCps();
   };
-
   document.getElementById("save").onclick = async () => {
     try {
-      await api("/api/plans", {
+      const created = await api("/api/plans", {
         method: "POST",
         body: JSON.stringify({ prospect_id: prospectId, tasks, checkpoints: cps }),
       });
       modal.remove();
+      openPlanModal(created);
       renderTab();
     } catch (e) { alert(e.message); }
   };
   document.getElementById("cancel").onclick = () => modal.remove();
-
-  renderTasks();
-  renderCps();
-}
-
-function openPlanModal(plan) {
-  const modal = document.createElement("div");
-  modal.className = "modal-backdrop";
-  const riskHtml = (h) => h.risk ? `<span class="risk">⚠ падение</span>` : "";
-  modal.innerHTML = `
-    <div class="modal">
-      <h2>${plan.student.full_name} · ${plan.student.class} · ${plan.subject}</h2>
-      <div>Цель: <b>${plan.goal}</b> · Статус: <b class="status-${(plan.status || "").replace(/\s/g, "-")}">${plan.status}</b></div>
-      <div class="section-title">Текущая точка</div>
-      <div>${plan.current ? `${plan.current.stage} · ${plan.current.status || "—"} · ${plan.current.score ?? "—"}` : "—"}</div>
-
-      <div class="section-title">История прогресса</div>
-      <table><thead><tr><th>Этап</th><th>Статус</th><th>Балл</th><th></th></tr></thead><tbody>
-        ${plan.history.map(h => `<tr>
-          <td>${h.stage}</td>
-          <td>${h.status || "—"}</td>
-          <td>${h.score ?? "—"}</td>
-          <td>${riskHtml(h)}</td>
-        </tr>`).join("")}
-      </tbody></table>
-
-      <div class="section-title">Задачи</div>
-      <div>${plan.tasks.length ? plan.tasks.map(t => `<div>${t.is_done ? "✓" : "○"} ${t.task_type || ""}: ${t.title} — ${t.due_date || "—"} (${t.responsible_teacher || "—"})</div>`).join("") : "<div class='empty'>Нет задач</div>"}</div>
-
-      <div class="section-title">Контрольные точки</div>
-      <div>${plan.checkpoints.length ? plan.checkpoints.map(c => `<div>${c.is_passed ? "✓" : "○"} ${c.title} — ${c.due_date || "—"}</div>`).join("") : "<div class='empty'>Нет контрольных точек</div>"}</div>
-
-      ${state.isAdmin ? `
-        <div class="section-title">Сменить статус плана</div>
-        <div class="inline-form">
-          ${["в работе", "на паузе", "завершён", "цель достигнута"].map(s =>
-            `<button data-status="${s}" ${plan.status === s ? "disabled" : ""}>${s}</button>`).join("")}
-        </div>` : ""}
-      <div class="inline-form" style="margin-top:16px"><button id="close">Закрыть</button></div>
-    </div>`;
-  document.getElementById("modal-root").appendChild(modal);
-  modal.querySelector("#close").onclick = () => modal.remove();
-
-  if (state.isAdmin) {
-    modal.querySelectorAll("[data-status]").forEach(b => b.onclick = async () => {
-      try {
-        await api(`/api/plans/${plan.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ status: b.dataset.status }),
-        });
-        modal.remove();
-        renderTab();
-      } catch (e) { alert(e.message); }
-    });
-  }
+  renderTasks(); renderCps();
 }
 
 // ---------- Start ----------

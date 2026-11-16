@@ -5,7 +5,9 @@ from ..database import get_db
 from ..auth import require_admin
 from ..models import (
     Prospect, Student, Subject, Result, Plan, Stage, ImportBatch,
+    PlanTask, PlanCheckpoint,
 )
+from ..services.plan_status import compute_status
 
 router = APIRouter()
 
@@ -75,7 +77,13 @@ def list_prospects(
                 cur_stage_code = code
                 break
         cur = by_stage.get(cur_stage_code) if cur_stage_code else None
+
         plan = db.query(Plan).filter(Plan.prospect_id == p.id).first()
+        plan_info = None
+        if plan:
+            tasks = db.query(PlanTask).filter(PlanTask.plan_id == plan.id).all()
+            cps = db.query(PlanCheckpoint).filter(PlanCheckpoint.plan_id == plan.id).all()
+            plan_info = {"id": plan.id, "status": compute_status(tasks, cps)}
 
         result.append({
             "prospect_id": p.id,
@@ -88,7 +96,7 @@ def list_prospects(
                 "status": cur.status if cur else None,
                 "score": cur.score if cur else None,
             },
-            "plan": {"id": plan.id, "status": plan.status} if plan else None,
+            "plan": plan_info,
         })
     return {"total": total, "items": result, "version_id": vid}
 
