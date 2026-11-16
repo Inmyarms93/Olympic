@@ -243,10 +243,6 @@ async function renderProspects(c) {
           <option value="auto">Авто</option>
           <option value="manual">Вручную</option>
         </select>
-        <select id="f-flag">
-          <option value="">Любой флаг</option>
-          <option>взят в план</option><option>приоритет</option><option>на паузе</option>
-        </select>
         <select id="f-plan"><option value="">Все</option><option value="yes">Есть план</option><option value="no">Нет плана</option></select>
         <input id="f-q" placeholder="Поиск по ФИО">
         <button class="primary" id="btn-refresh">Применить</button>
@@ -264,7 +260,6 @@ async function renderProspects(c) {
       class_name: document.getElementById("f-class").value,
       subject: document.getElementById("f-subject").value,
       source: document.getElementById("f-source").value,
-      flag: document.getElementById("f-flag").value,
       has_plan: document.getElementById("f-plan").value,
       q: document.getElementById("f-q").value,
       limit: 200,
@@ -281,7 +276,7 @@ async function renderProspects(c) {
           <th class="checkbox-col"><input type="checkbox" id="select-all" ${!state.isAdmin ? "disabled" : ""}></th>
           <th>ФИО</th><th>Класс</th><th>Предмет</th>
           <th>Этап</th><th>Статус</th><th>Балл</th>
-          <th>Авто</th><th>Флаг</th><th>План</th><th></th>
+          <th>Авто</th><th>План</th><th></th>
         </tr></thead>
         <tbody>
           ${data.items.map(i => `<tr>
@@ -293,7 +288,6 @@ async function renderProspects(c) {
             <td>${i.current.status || "—"}</td>
             <td>${i.current.score ?? "—"}</td>
             <td>${i.auto_qualified ? "да" : "—"}</td>
-            <td>${i.manual_flag ? `<span class="flag ${flagClass(i.manual_flag)}">${esc(i.manual_flag)}</span>` : "—"}</td>
             <td>${i.plan ? statusBadge(i.plan.status) : "—"}</td>
             <td><button data-pid="${i.prospect_id}" data-plan="${i.plan ? i.plan.id : ""}">Открыть</button></td>
           </tr>`).join("")}
@@ -316,11 +310,14 @@ async function renderProspects(c) {
       updateBulkInfo();
     }
   }
+
   function updateBulkInfo() {
     const n = document.querySelectorAll(".row-check:checked").length;
     document.getElementById("bulk-info").textContent = `Выбрано: ${n}`;
   }
+
   document.getElementById("btn-refresh").addEventListener("click", load);
+
   if (state.isAdmin) {
     document.getElementById("bulk-flag").addEventListener("click", async () => {
       const ids = [...document.querySelectorAll(".row-check:checked")].map(x => Number(x.value));
@@ -334,6 +331,7 @@ async function renderProspects(c) {
       } catch (e) { alert(e.message); }
     });
   }
+
   await load();
 }
 
