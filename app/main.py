@@ -9,7 +9,7 @@ from .database import engine, SessionLocal
 from .models import Base, Stage
 from .routers import (
     auth_router, kpi_router, prospects_router, plans_router,
-    problem_zones_router, imports_router, versions_router,
+    problem_zones_router, imports_router, versions_router, results_router,
 )
 
 load_dotenv()
@@ -20,6 +20,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Olympiad Preparation Dashboard")
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, same_site="lax")
 
+app.include_router(results_router, prefix="/api", tags=["results"])
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(kpi_router, prefix="/api", tags=["kpi"])
 app.include_router(prospects_router, prefix="/api", tags=["prospects"])

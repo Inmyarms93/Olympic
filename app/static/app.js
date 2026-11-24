@@ -4,6 +4,7 @@ const state = {
   versionId: null,
   versions: [],
   filters: { classes: [], subjects: [] },
+  resultsPage: 1,
 };
 
 // ---------- API ----------
@@ -175,6 +176,7 @@ async function renderTab() {
     if (state.tab === "kpi") await renderKpi(c);
     else if (state.tab === "prospects") await renderProspects(c);
     else if (state.tab === "plans") await renderPlans(c);
+    else if (state.tab === "results") await renderResults(c);
     else if (state.tab === "problems") await renderProblems(c);
   } catch (e) {
     c.innerHTML = `<div class="empty">Ошибка: ${e.message}</div>`;
@@ -781,6 +783,147 @@ function openCreatePlanModal(prospectId) {
   document.getElementById("cancel").onclick = () => modal.remove();
   renderTasks(); renderCps();
 }
+// ---------- Результаты (данные версии) ----------
+async function renderResults(c) {
+  if (!state.resultsPage) state.resultsPage = 1;
 
+  c.innerHTML = `
+    <div class="card">
+      <div class="filters">
+        <select id="r-class"><option value="">Все классы</option>${state.filters.classes.map(x => `<option>${esc(x)}</option>`).join("")}</select>
+        <select id="r-subject"><option value="">Все предметы</option>${state.filters.subjects.map(x => `<option>${esc(x)}</option>`).join("")}</select>
+        <select id="r-stage">
+          <option value="">Все этапы</option>
+          <option value="school">Школьный</option>
+          <option value="municipal">Муниципальный</option>
+          <option value="regional">Региональный</option>
+        </select>
+        <input id="r-q" placeholder="Поиск по ФИО">
+        <button class="primary" id="r-refresh">Применить</button>
+        ${state.isAdmin ? `<span class="empty" style="align-self:center">Изменения сохраняются автоматически</span>` : ""}
+      </div>
+      <div id="results-list"></div>
+      <div class="pagination" id="results-pagination"></div>
+    </div>
+  `;
+
+  async function load() {
+    const qs = new URLSearchParams({
+      class_name: document.getElementById("r-class").value,
+      subject: document.getElementById("r-subject").value,
+      stage_code: document.getElementById("r-stage").value,
+      q: document.getElementById("r-q").value,
+      page: state.resultsPage,
+      limit: 100,
+    });
+    const data = await api(withVersion(`/api/results?${qs.toString()}`));
+    const list = document.getElementById("results-list");
+    if (!data.items.length) {
+      list.innerHTML = "<div class='empty'>Ничего не найдено</div>";
+      document.getElementById("results-pagination").innerHTML = "";
+      return;
+    }
+
+    const isAdmin = state.isAdmin;
+
+    list.innerHTML = `
+      <div class="empty">Показано: ${data.items.length} из ${data.total}</div>
+      <table class="edit-table">
+        <thead><tr>
+          <th>ФИО</th><th>Класс</th><th>Предмет</th><th>Этап</th>
+          <th>Допущен</th><th>Участие</th><th>Статус</th><th>Балл</th>
+        </tr></thead>
+        <tbody>
+          ${data.items.map(r => `<tr data-result-id="${r.id}">
+            <td>${esc(r.student.full_name)}</td>
+            <td>${esc(r.student.class)}</td>
+            <td>${esc(r.subject)}</td>
+            <td>${esc(r.stage.name)}</td>
+            <td class="cell-allowed">${isAdmin ? `
+              <select class="r-field" data-field="allowed">
+                <option value="" ${r.allowed === null ? "selected" : ""}>—</option>
+                <option value="true" ${r.allowed === true ? "selected" : ""}>Есть</option>
+                <option value="false" ${r.allowed === false ? "selected" : ""}>Нет</option>
+              </select>` : (r.allowed === true ? "Есть" : r.allowed === false ? "Нет" : "—")}
+            </td>
+            <td class="cell-participation">${isAdmin ? `
+              <select class="r-field" data-field="participation">
+                <option value="" ${!r.participation ? "selected" : ""}>—</option>
+                <option value="Участвовал" ${r.participation === "Участвовал" ? "selected" : ""}>Участвовал</option>
+                <option value="Отсутствовал" ${r.participation === "Отсутствовал" ? "selected" : ""}>Отсутствовал</option>
+              </select>` : (esc(r.participation || "—"))}
+            </td>
+            <td class="cell-status">${isAdmin ? `
+              <select class="r-field" data-field="status">
+                <option value="" ${!r.status ? "selected" : ""}>—</option>
+                <option value="Участник" ${r.status === "Участник" ? "selected" : ""}>Участник</option>
+                <option value="Призер" ${r.status === "Призер" ? "selected" : ""}>Призер</option>
+                <option value="Победитель" ${r.status === "Победитель" ? "selected" : ""}>Победитель</option>
+              </select>` : (esc(r.status || "—"))}
+            </td>
+            <td class="cell-score">${isAdmin ? `
+              <input class="r-field" data-field="score" type="number" step="0.01" value="${r.score ?? ""}">
+            ` : (r.score ?? "—")}
+            </td>
+          </tr>`).join("")}
+        </tbody>
+      </table>`;
+
+    if (isAdmin) {
+      list.querySelectorAll(".r-field").forEach(f => {
+        f.addEventListener("change", async () => {
+          const tr = f.closest("tr");
+          const resultId = Number(tr.dataset.resultId);
+          const field = f.dataset.field;
+          let value;
+          if (field === "allowed") value = f.value === "" ? null : f.value === "true";
+          else if (field === "score") value = f.value === "" ? null : Number(f.value);
+          else value = f.value === "" ? null : f.value;
+
+          const cell = f.closest("td");
+          try {
+            await api(`/api/results/${resultId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ [field]: value }),
+            });
+            cell.style.background = "#e6ffe6";
+            setTimeout(() => { cell.style.background = ""; }, 800);
+          } catch (e) {
+            alert(e.message);
+            load();
+          }
+        });
+      });
+    }
+
+    renderPagination(
+      document.getElementById("results-pagination"),
+      state.resultsPage,
+      data.total,
+      100,
+      newPage => { state.resultsPage = newPage; load(); }
+    );
+  }
+
+  document.getElementById("r-refresh").addEventListener("click", () => {
+    state.resultsPage = 1;
+    load();
+  });
+
+  await load();
+}
+
+function renderPagination(container, page, total, limit, onPage) {
+  const totalPages = Math.ceil(total / limit);
+  if (totalPages <= 1) { container.innerHTML = ""; return; }
+  container.innerHTML = `
+    <button ${page <= 1 ? "disabled" : ""} data-page="${page - 1}">← Назад</button>
+    <span>Страница ${page} из ${totalPages} (всего ${total})</span>
+    <button ${page >= totalPages ? "disabled" : ""} data-page="${page + 1}">Вперёд →</button>
+  `;
+  container.querySelectorAll("[data-page]").forEach(b => {
+    b.onclick = () => onPage(Number(b.dataset.page));
+  });
+}
 // ---------- Start ----------
 init();
