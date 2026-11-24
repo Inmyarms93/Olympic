@@ -1,14 +1,16 @@
-from datetime import datetime, date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..auth import require_admin
 from ..models import (
-    Plan, Prospect, Student, Subject, Result, Stage,
-    PlanTask, PlanCheckpoint, ImportBatch,
+    Result, Student, Subject, Stage, ImportBatch,
+    Prospect, Plan, PlanTask, PlanCheckpoint
 )
-from ..services.plan_status import compute_status
+from ..services.importer import (
+    _rebuild_prospects_for_batch, _rebuild_anomalies_for_batch,
+)
+from ..services.normalize import parse_parallel, normalize_subject
 
 router = APIRouter()
 
@@ -20,325 +22,187 @@ def _resolve_version(db: Session, version_id: int | None) -> int | None:
     return latest.id if latest else None
 
 
-def _serialize_plan(db: Session, plan: Plan) -> dict:
-    prospect = db.get(Prospect, plan.prospect_id)
-    if not prospect:
-        raise HTTPException(404, "Перспектива не найдена")
-    student = db.get(Student, prospect.student_id)
-    subject = db.get(Subject, prospect.subject_id)
-
-    stages = {s.code: s for s in db.query(Stage).all()}
-    rs = (db.query(Result)
-          .filter(Result.import_batch_id == plan.import_batch_id,
-                  Result.student_id == student.id, Result.subject_id == subject.id)
-          .all())
-    by_stage = {r.stage_code: r for r in rs}
-
-    history = []
-    last_score = None
-    for code in ("school", "municipal", "regional"):
-        r = by_stage.get(code)
-        risk = False
-        if r and r.score is not None:
-            if last_score is not None and r.score < last_score:
-                risk = True
-            last_score = r.score
-        history.append({
-            "stage": stages[code].name,
-            "status": r.status if r else None,
-            "score": r.score if r else None,
-            "allowed": r.allowed if r else None,
-            "participation": r.participation if r else None,
-            "risk": risk,
-        })
-
-    cur = None
-    for code in ("regional", "municipal", "school"):
-        r = by_stage.get(code)
-        if r and (r.status or r.score is not None):
-            cur = {"stage": stages[code].name, "status": r.status, "score": r.score}
-            break
-
-    tasks = (db.query(PlanTask).filter(PlanTask.plan_id == plan.id)
-             .order_by(PlanTask.due_date.is_(None), PlanTask.due_date).all())
-    checkpoints = (db.query(PlanCheckpoint).filter(PlanCheckpoint.plan_id == plan.id)
-                   .order_by(PlanCheckpoint.due_date.is_(None), PlanCheckpoint.due_date).all())
-
-    computed_status = compute_status(tasks, checkpoints)
-
-    return {
-        "id": plan.id,
-        "version_id": plan.import_batch_id,
-        "prospect_id": prospect.id,
-        "student": {"full_name": student.full_name, "class": student.class_name},
-        "subject": subject.name,
-        "goal": plan.goal,
-        "status": computed_status,
-        "current": cur,
-        "history": history,
-        "tasks": [{
-            "id": t.id, "task_type": t.task_type, "title": t.title,
-            "description": t.description,
-            "due_date": str(t.due_date) if t.due_date else None,
-            "responsible_teacher": t.responsible_teacher,
-            "is_done": t.is_done,
-        } for t in tasks],
-        "checkpoints": [{
-            "id": c.id, "title": c.title,
-            "due_date": str(c.due_date) if c.due_date else None,
-            "is_passed": c.is_passed, "comment": c.comment,
-        } for c in checkpoints],
-    }
-
-
-@router.get("/plans")
-def list_plans(
-    db: Session = Depends(get_db),
-    version_id: int | None = Query(None),
-    status: str | None = None,
-    teacher: str | None = None,
-    subject: str | None = None,
-    class_name: str | None = None,
-    q: str | None = None,
+@router.get("/results")
+def list_results(
+        db: Session = Depends(get_db),
+        version_id: int | None = Query(None),
+        class_name: str | None = Query(None),
+        subject: str | None = Query(None),
+        stage_code: str | None = Query(None),
+        q: str | None = Query(None),
+        page: int = Query(1, ge=1),
+        limit: int = Query(100, ge=1, le=500),
 ):
     vid = _resolve_version(db, version_id)
     if vid is None:
-        return {"items": [], "version_id": None}
+        return {"total": 0, "items": [], "version_id": None}
 
-    qy = (db.query(Plan, Prospect, Student, Subject)
-          .join(Prospect, Prospect.id == Plan.prospect_id)
-          .join(Student, Student.id == Prospect.student_id)
-          .join(Subject, Subject.id == Prospect.subject_id)
-          .filter(Plan.import_batch_id == vid))
-    if subject:
-        qy = qy.filter(Subject.name == subject)
+    qy = (db.query(Result, Student, Subject, Stage)
+          .join(Student, Student.id == Result.student_id)
+          .join(Subject, Subject.id == Result.subject_id)
+          .join(Stage, Stage.code == Result.stage_code)
+          .filter(Result.import_batch_id == vid))
+
     if class_name:
         qy = qy.filter(Student.class_name == class_name)
+    if subject:
+        qy = qy.filter(Subject.name == subject)
+    if stage_code:
+        qy = qy.filter(Result.stage_code == stage_code)
     if q:
         qy = qy.filter(Student.full_name.ilike(f"%{q}%"))
-    if teacher:
-        plan_ids = {pid for (pid,) in db.query(PlanTask.plan_id)
-                    .filter(PlanTask.responsible_teacher == teacher).distinct().all()}
-        qy = qy.filter(Plan.id.in_(plan_ids or [-1]))
 
-    rows = qy.all()
-    today = date.today()
+    total = qy.count()
+    rows = (qy.order_by(Student.full_name, Subject.name, Stage.order)
+            .offset((page - 1) * limit).limit(limit).all())
 
     items = []
-    for plan, prospect, student, subject_ in rows:
-        tasks = db.query(PlanTask).filter(PlanTask.plan_id == plan.id).all()
-        checkpoints = db.query(PlanCheckpoint).filter(PlanCheckpoint.plan_id == plan.id).all()
-        computed = compute_status(tasks, checkpoints, today)
-
-        if status and computed != status:
-            continue
-
-        done_tasks = sum(1 for t in tasks if t.is_done)
-        done_cps = sum(1 for c in checkpoints if c.is_passed)
-        upcoming = [t.due_date for t in tasks if t.due_date and not t.is_done]
-        upcoming += [c.due_date for c in checkpoints if c.due_date and not c.is_passed]
-        next_due = min(upcoming).isoformat() if upcoming else None
-        teachers = sorted({t.responsible_teacher for t in tasks if t.responsible_teacher})
-
+    for r, st, subj, stage in rows:
         items.append({
-            "id": plan.id,
-            "student": {"full_name": student.full_name, "class": student.class_name},
-            "subject": subject_.name,
-            "goal": plan.goal,
-            "status": computed,
-            "tasks_done": done_tasks, "tasks_total": len(tasks),
-            "checkpoints_done": done_cps, "checkpoints_total": len(checkpoints),
-            "next_due": next_due,
-            "teachers": teachers,
+            "id": r.id,
+            "student": {"full_name": st.full_name, "class": st.class_name},
+            "subject": subj.name,
+            "stage": {"code": stage.code, "name": stage.name},
+            "allowed": r.allowed,
+            "participation": r.participation,
+            "status": r.status,
+            "score": r.score,
         })
-
-    order = {"просрочен": 0, "выполняется": 1, "выполнен": 2}
-    items.sort(key=lambda x: (x["next_due"] or "9999", order.get(x["status"], 9)))
-    return {"items": items, "version_id": vid}
+    return {"total": total, "items": items, "version_id": vid}
 
 
-@router.get("/plans/{plan_id}")
-def get_plan(plan_id: int, db: Session = Depends(get_db)):
-    plan = db.get(Plan, plan_id)
-    if not plan:
-        raise HTTPException(404, "План не найден")
-    return _serialize_plan(db, plan)
+class ResultCreateIn(BaseModel):
+    version_id: int
+    full_name: str
+    class_name: str
+    subject_name: str
+    stage_code: str
+    allowed: bool | None = None
+    participation: str | None = None
+    status: str | None = None
+    score: float | None = None
 
 
-class PlanCreateIn(BaseModel):
-    prospect_id: int
-    goal: str | None = None
-    tasks: list[dict] = []
-    checkpoints: list[dict] = []
+@router.post("/results", dependencies=[Depends(require_admin)])
+def create_result(data: ResultCreateIn, db: Session = Depends(get_db)):
+    # 1. Найти или создать ученика
+    student = db.query(Student).filter(
+        Student.full_name == data.full_name,
+        Student.class_name == data.class_name
+    ).first()
+    if not student:
+        student = Student(
+            full_name=data.full_name,
+            class_name=data.class_name,
+            parallel=parse_parallel(data.class_name)
+        )
+        db.add(student)
+        db.flush()
 
+    # 2. Найти или создать предмет (используем нормализацию)
+    norm_name = normalize_subject(data.subject_name)
+    subject = db.query(Subject).filter(Subject.name == norm_name).first()
+    if not subject:
+        subject = Subject(name=norm_name)
+        db.add(subject)
+        db.flush()
 
-@router.post("/plans", dependencies=[Depends(require_admin)])
-def create_plan(data: PlanCreateIn, db: Session = Depends(get_db)):
-    prospect = db.get(Prospect, data.prospect_id)
-    if not prospect:
-        raise HTTPException(404, "Перспектива не найдена")
-    existing = db.query(Plan).filter(Plan.prospect_id == data.prospect_id).first()
+    # 3. Проверить на дубликат
+    existing = db.query(Result).filter(
+        Result.import_batch_id == data.version_id,
+        Result.student_id == student.id,
+        Result.subject_id == subject.id,
+        Result.stage_code == data.stage_code
+    ).first()
     if existing:
-        raise HTTPException(400, "План для этой пары уже существует")
-    plan = Plan(
-        import_batch_id=prospect.import_batch_id,
-        prospect_id=data.prospect_id,
-        goal=data.goal or "призёр регионального этапа",
+        raise HTTPException(400, "Результат для этого ученика, предмета и этапа уже существует в этой версии")
+
+    # 4. Создать результат
+    r = Result(
+        import_batch_id=data.version_id,
+        student_id=student.id,
+        subject_id=subject.id,
+        stage_code=data.stage_code,
+        allowed=data.allowed,
+        participation=data.participation,
+        status=data.status,
+        score=data.score
     )
-    db.add(plan)
+    db.add(r)
     db.flush()
-    for t in data.tasks:
-        db.add(PlanTask(
-            plan_id=plan.id, task_type=t.get("task_type"),
-            title=t.get("title", ""), description=t.get("description"),
-            due_date=_parse_date(t.get("due_date")),
-            responsible_teacher=t.get("responsible_teacher"),
-        ))
-    for c in data.checkpoints:
-        db.add(PlanCheckpoint(
-            plan_id=plan.id, title=c.get("title", ""),
-            due_date=_parse_date(c.get("due_date")),
-            comment=c.get("comment"),
-        ))
-    prospect.manual_flag = prospect.manual_flag or "взят в план"
+
+    # 5. Пересчитать бизнес-логику
+    _rebuild_prospects_for_batch(db, data.version_id)
+    _rebuild_anomalies_for_batch(db, data.version_id)
     db.commit()
-    db.refresh(plan)
-    return _serialize_plan(db, plan)
+
+    return {"id": r.id}
 
 
-class PlanUpdateIn(BaseModel):
-    goal: str | None = None  # статус больше не редактируется
+class ResultPatchIn(BaseModel):
+    allowed: bool | None = None
+    participation: str | None = None
+    status: str | None = None
+    score: float | None = None
 
 
-@router.patch("/plans/{plan_id}", dependencies=[Depends(require_admin)])
-def update_plan(plan_id: int, data: PlanUpdateIn, db: Session = Depends(get_db)):
-    plan = db.get(Plan, plan_id)
-    if not plan:
-        raise HTTPException(404, "План не найден")
-    if data.goal:
-        plan.goal = data.goal
+@router.patch("/results/{result_id}", dependencies=[Depends(require_admin)])
+def update_result(result_id: int, data: ResultPatchIn, db: Session = Depends(get_db)):
+    r = db.get(Result, result_id)
+    if not r:
+        raise HTTPException(404, "Результат не найден")
+
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(r, field, value)
+
+    db.flush()
+    _rebuild_prospects_for_batch(db, r.import_batch_id)
+    _rebuild_anomalies_for_batch(db, r.import_batch_id)
     db.commit()
-    return _serialize_plan(db, plan)
+
+    st = db.get(Student, r.student_id)
+    subj = db.get(Subject, r.subject_id)
+    stage = db.get(Stage, r.stage_code)
+    return {
+        "id": r.id,
+        "student": {"full_name": st.full_name, "class": st.class_name},
+        "subject": subj.name,
+        "stage": {"code": stage.code, "name": stage.name},
+        "allowed": r.allowed,
+        "participation": r.participation,
+        "status": r.status,
+        "score": r.score,
+    }
 
 
-# ---------- Tasks ----------
+@router.delete("/results/{result_id}", dependencies=[Depends(require_admin)])
+def delete_result(result_id: int, db: Session = Depends(get_db)):
+    r = db.get(Result, result_id)
+    if not r:
+        raise HTTPException(404, "Результат не найден")
 
-class TaskCreateIn(BaseModel):
-    task_type: str | None = None
-    title: str
-    description: str | None = None
-    due_date: str | None = None
-    responsible_teacher: str | None = None
+    # Каскадное удаление плана (если он привязан к этой паре ученик+предмет)
+    prospect = db.query(Prospect).filter(
+        Prospect.import_batch_id == r.import_batch_id,
+        Prospect.student_id == r.student_id,
+        Prospect.subject_id == r.subject_id
+    ).first()
 
+    if prospect:
+        plan = db.query(Plan).filter(Plan.prospect_id == prospect.id).first()
+        if plan:
+            db.query(PlanTask).filter(PlanTask.plan_id == plan.id).delete()
+            db.query(PlanCheckpoint).filter(PlanCheckpoint.plan_id == plan.id).delete()
+            db.delete(plan)
+        db.delete(prospect)
 
-class TaskPatchIn(BaseModel):
-    task_type: str | None = None
-    title: str | None = None
-    description: str | None = None
-    due_date: str | None = None
-    responsible_teacher: str | None = None
-    is_done: bool | None = None
+    batch_id = r.import_batch_id
+    db.delete(r)
+    db.flush()
 
-
-@router.post("/plans/{plan_id}/tasks", dependencies=[Depends(require_admin)])
-def add_task(plan_id: int, data: TaskCreateIn, db: Session = Depends(get_db)):
-    if not db.get(Plan, plan_id):
-        raise HTTPException(404, "План не найден")
-    t = PlanTask(plan_id=plan_id, task_type=data.task_type, title=data.title,
-                 description=data.description, due_date=_parse_date(data.due_date),
-                 responsible_teacher=data.responsible_teacher)
-    db.add(t)
+    # Пересчитываем
+    _rebuild_prospects_for_batch(db, batch_id)
+    _rebuild_anomalies_for_batch(db, batch_id)
     db.commit()
-    db.refresh(t)
-    return {"id": t.id}
 
-
-@router.patch("/plans/{plan_id}/tasks/{task_id}", dependencies=[Depends(require_admin)])
-def update_task(plan_id: int, task_id: int, data: TaskPatchIn, db: Session = Depends(get_db)):
-    t = db.get(PlanTask, task_id)
-    if not t or t.plan_id != plan_id:
-        raise HTTPException(404, "Задача не найдена")
-    for f in ("task_type", "title", "description", "responsible_teacher"):
-        v = getattr(data, f)
-        if v is not None:
-            setattr(t, f, v)
-    if data.due_date is not None:
-        t.due_date = _parse_date(data.due_date) if data.due_date else None
-    if data.is_done is not None:
-        t.is_done = data.is_done
-        t.done_at = datetime.utcnow() if data.is_done else None
-    db.commit()
     return {"ok": True}
-
-
-@router.delete("/plans/{plan_id}/tasks/{task_id}", dependencies=[Depends(require_admin)])
-def delete_task(plan_id: int, task_id: int, db: Session = Depends(get_db)):
-    t = db.get(PlanTask, task_id)
-    if not t or t.plan_id != plan_id:
-        raise HTTPException(404, "Задача не найдена")
-    db.delete(t)
-    db.commit()
-    return {"ok": True}
-
-
-# ---------- Checkpoints ----------
-
-class CheckpointCreateIn(BaseModel):
-    title: str
-    due_date: str | None = None
-    comment: str | None = None
-
-
-class CheckpointPatchIn(BaseModel):
-    title: str | None = None
-    due_date: str | None = None
-    comment: str | None = None
-    is_passed: bool | None = None
-
-
-@router.post("/plans/{plan_id}/checkpoints", dependencies=[Depends(require_admin)])
-def add_checkpoint(plan_id: int, data: CheckpointCreateIn, db: Session = Depends(get_db)):
-    if not db.get(Plan, plan_id):
-        raise HTTPException(404, "План не найден")
-    c = PlanCheckpoint(plan_id=plan_id, title=data.title,
-                       due_date=_parse_date(data.due_date), comment=data.comment)
-    db.add(c)
-    db.commit()
-    db.refresh(c)
-    return {"id": c.id}
-
-
-@router.patch("/plans/{plan_id}/checkpoints/{cp_id}", dependencies=[Depends(require_admin)])
-def update_checkpoint(plan_id: int, cp_id: int, data: CheckpointPatchIn, db: Session = Depends(get_db)):
-    c = db.get(PlanCheckpoint, cp_id)
-    if not c or c.plan_id != plan_id:
-        raise HTTPException(404, "Контрольная точка не найдена")
-    if data.title is not None:
-        c.title = data.title
-    if data.due_date is not None:
-        c.due_date = _parse_date(data.due_date) if data.due_date else None
-    if data.comment is not None:
-        c.comment = data.comment
-    if data.is_passed is not None:
-        c.is_passed = data.is_passed
-        c.passed_at = datetime.utcnow() if data.is_passed else None
-    db.commit()
-    return {"ok": True}
-
-
-@router.delete("/plans/{plan_id}/checkpoints/{cp_id}", dependencies=[Depends(require_admin)])
-def delete_checkpoint(plan_id: int, cp_id: int, db: Session = Depends(get_db)):
-    c = db.get(PlanCheckpoint, cp_id)
-    if not c or c.plan_id != plan_id:
-        raise HTTPException(404, "Контрольная точка не найдена")
-    db.delete(c)
-    db.commit()
-    return {"ok": True}
-
-
-def _parse_date(v):
-    if not v:
-        return None
-    if isinstance(v, str):
-        return datetime.strptime(v, "%Y-%m-%d").date()
-    return v

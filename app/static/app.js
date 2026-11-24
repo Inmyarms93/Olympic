@@ -800,7 +800,7 @@ async function renderResults(c) {
         </select>
         <input id="r-q" placeholder="Поиск по ФИО">
         <button class="primary" id="r-refresh">Применить</button>
-        ${state.isAdmin ? `<span class="empty" style="align-self:center">Изменения сохраняются автоматически</span>` : ""}
+        ${state.isAdmin ? `<button class="primary" id="r-add" style="margin-left:auto; background:#10b981; border-color:#10b981;">+ Добавить строку</button>` : ""}
       </div>
       <div id="results-list"></div>
       <div class="pagination" id="results-pagination"></div>
@@ -827,11 +827,12 @@ async function renderResults(c) {
     const isAdmin = state.isAdmin;
 
     list.innerHTML = `
-      <div class="empty">Показано: ${data.items.length} из ${data.total}</div>
+      <div class="empty" style="text-align:left; background:transparent; border:none; padding:0 0 10px 0;">Показано: ${data.items.length} из ${data.total}</div>
       <table class="edit-table">
         <thead><tr>
           <th>ФИО</th><th>Класс</th><th>Предмет</th><th>Этап</th>
           <th>Допущен</th><th>Участие</th><th>Статус</th><th>Балл</th>
+          ${isAdmin ? "<th></th>" : ""}
         </tr></thead>
         <tbody>
           ${data.items.map(r => `<tr data-result-id="${r.id}">
@@ -865,11 +866,13 @@ async function renderResults(c) {
               <input class="r-field" data-field="score" type="number" step="0.01" value="${r.score ?? ""}">
             ` : (r.score ?? "—")}
             </td>
+            ${isAdmin ? `<td><button class="btn-del" data-del-result="${r.id}">×</button></td>` : ""}
           </tr>`).join("")}
         </tbody>
       </table>`;
 
     if (isAdmin) {
+      // Сохранение при изменении ячейки
       list.querySelectorAll(".r-field").forEach(f => {
         f.addEventListener("change", async () => {
           const tr = f.closest("tr");
@@ -894,6 +897,17 @@ async function renderResults(c) {
           }
         });
       });
+
+      // Удаление строки
+      list.querySelectorAll("[data-del-result]").forEach(b => {
+        b.addEventListener("click", async () => {
+          if (!confirm("Удалить результат?\\nВнимание: если по этому ученику и предмету есть план подготовки, он будет удалён вместе с задачами.")) return;
+          try {
+            await api(`/api/results/${b.dataset.delResult}`, { method: "DELETE" });
+            load();
+          } catch (e) { alert(e.message); }
+        });
+      });
     }
 
     renderPagination(
@@ -910,7 +924,129 @@ async function renderResults(c) {
     load();
   });
 
+  if (state.isAdmin) {
+    document.getElementById("r-add").addEventListener("click", () => {
+      openAddResultModal(() => {
+        state.resultsPage = 1;
+        load();
+      });
+    });
+  }
+
   await load();
+}
+
+// Модалка добавления новой строки
+function openAddResultModal(onSaved) {
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop";
+  modal.innerHTML = `
+    <div class="modal" style="max-width: 600px;">
+      <h2>Добавить результат</h2>
+      <div class="add-form" style="flex-direction: column; align-items: stretch; gap: 12px;">
+        <div>
+          <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">ФИО ученика</label>
+          <input id="new-r-name" placeholder="Иванов Иван Иванович" style="width:100%;">
+        </div>
+        <div>
+          <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Класс</label>
+          <input id="new-r-class" placeholder="10-А" style="width:100%;">
+        </div>
+        <div>
+          <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Предмет</label>
+          <input id="new-r-subject" placeholder="Математика" style="width:100%;">
+        </div>
+        <div>
+          <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Этап</label>
+          <select id="new-r-stage" style="width:100%;">
+            <option value="school">Школьный</option>
+            <option value="municipal">Муниципальный</option>
+            <option value="regional">Региональный</option>
+          </select>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div>
+            <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Допущен</label>
+            <select id="new-r-allowed" style="width:100%;">
+              <option value="">—</option>
+              <option value="true">Есть</option>
+              <option value="false">Нет</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Участие</label>
+            <select id="new-r-part" style="width:100%;">
+              <option value="">—</option>
+              <option value="Участвовал">Участвовал</option>
+              <option value="Отсутствовал">Отсутствовал</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div>
+            <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Статус</label>
+            <select id="new-r-status" style="width:100%;">
+              <option value="">—</option>
+              <option value="Участник">Участник</option>
+              <option value="Призер">Призер</option>
+              <option value="Победитель">Победитель</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">Балл</label>
+            <input id="new-r-score" type="number" step="0.01" placeholder="0" style="width:100%;">
+          </div>
+        </div>
+      </div>
+      <div class="inline-form" style="margin-top:8px;">
+        <button class="primary" id="btn-save-result">Сохранить</button>
+        <button id="btn-cancel-result">Отмена</button>
+      </div>
+    </div>
+  `;
+  document.getElementById("modal-root").innerHTML = "";
+  document.getElementById("modal-root").appendChild(modal);
+
+  modal.querySelector("#btn-cancel-result").onclick = () => modal.remove();
+
+  modal.querySelector("#btn-save-result").onclick = async () => {
+    const full_name = document.getElementById("new-r-name").value.trim();
+    const class_name = document.getElementById("new-r-class").value.trim();
+    const subject_name = document.getElementById("new-r-subject").value.trim();
+    const stage_code = document.getElementById("new-r-stage").value;
+
+    if (!full_name || !class_name || !subject_name) {
+      return alert("Заполните ФИО, класс и предмет");
+    }
+
+    const allowedVal = document.getElementById("new-r-allowed").value;
+    const partVal = document.getElementById("new-r-part").value;
+    const statusVal = document.getElementById("new-r-status").value;
+    const scoreVal = document.getElementById("new-r-score").value;
+
+    const payload = {
+      version_id: state.versionId,
+      full_name,
+      class_name,
+      subject_name,
+      stage_code,
+      allowed: allowedVal === "" ? null : allowedVal === "true",
+      participation: partVal || null,
+      status: statusVal || null,
+      score: scoreVal === "" ? null : Number(scoreVal)
+    };
+
+    try {
+      await api("/api/results", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      modal.remove();
+      if (onSaved) onSaved();
+    } catch (e) {
+      alert(e.message);
+    }
+  };
 }
 
 function renderPagination(container, page, total, limit, onPage) {
